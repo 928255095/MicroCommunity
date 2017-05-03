@@ -1,16 +1,18 @@
 package com.java110.core.event;
 
+import com.alibaba.fastjson.JSONArray;
+import com.java110.common.constant.CommonConstant;
 import com.java110.common.log.LoggerEngine;
-import org.apache.commons.logging.LogFactory;
-import org.springframework.util.Assert;
+import com.java110.common.util.Assert;
+import com.java110.core.context.AppContext;
 
+
+import java.lang.reflect.Constructor;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 /**
  * 事件发布侦听
@@ -22,15 +24,26 @@ public class AppEventPublishing extends LoggerEngine{
 
     private static Executor taskExecutor;
 
+    //默认 线程数 100
+    private final static int DEFAULT_THREAD_NUM = 100;
+
     /**
      * 保存侦听实例信息，一般启动时加载
      */
     private final static List<AppListener<?>> listeners = new ArrayList<AppListener<?>>();
 
     /**
+     * 保存事件实例信息，一般启动时加载
+     */
+    private final static Map<String,Class<AppEvent>> events = new HashMap<String,Class<AppEvent>>();
+
+    /**
      * 根据 事件类型查询侦听
      */
     private final static Map<String,List<AppListener<?>>> cacheListenersMap = new HashMap<String, List<AppListener<?>>>();
+
+
+
 
 
     /**
@@ -52,6 +65,7 @@ public class AppEventPublishing extends LoggerEngine{
     /**
      * 根据是否实现了某个接口，返回侦听
      * @param interfaceClassName
+     * @since 1.7
      * @return
      */
     public static List<AppListener<?>> getListeners(String interfaceClassName){
@@ -82,26 +96,107 @@ public class AppEventPublishing extends LoggerEngine{
         return appListeners;
     }
 
+    /**
+     * 注册事件
+     */
+    public static void addEvent(String actionTypeCd ,Class<AppEvent> event) {
+        events.put(actionTypeCd,event);
+    }
 
-    public static void multicastEvent(String actionTypeCd,String data){
-        multicastEvent(new AppCustEvent("",data));
+    /**
+     * 获取事件
+     * @param actionTypeCd
+     * @return
+     * @throws Exception
+     */
+    public static Class<AppEvent> getEvent(String actionTypeCd) throws Exception{
+        Class<AppEvent> targetEvent = events.get(actionTypeCd);
+        Assert.notNull(targetEvent,"未注册该事件[actionTypeCd = "+actionTypeCd+"]，系统目前不支持!");
+        return targetEvent;
+    }
+
+
+    /**
+     * 发布事件
+     * @param actionTypeCd
+     * @param data
+     */
+    public static void multicastEvent(String actionTypeCd,String data) throws  Exception{
+        multicastEvent(actionTypeCd,null,data,null);
+    }
+
+    /**
+     * 发布事件
+     * @param actionTypeCd
+     * @param data
+     */
+    public static void multicastEvent(String actionTypeCd,String data,String asyn) throws  Exception{
+        multicastEvent(actionTypeCd,null,data,asyn);
+    }
+
+    /**
+     * 发布事件
+     * @param actionTypeCd
+     * @param orderInfo 这个订单信息，以便于 侦听那边需要用
+     * @param data 对应信息，侦听，一般需要处理这个就可以
+     */
+    public static void multicastEvent(String actionTypeCd,String orderInfo,String data,String asyn) throws  Exception{
+        Class<AppEvent> appEvent = getEvent(actionTypeCd);
+
+        Class[] parameterTypes={Object.class,String.class};
+
+        Constructor constructor = appEvent.getClass().getConstructor(parameterTypes);
+        Object[] parameters={orderInfo,data};
+        AppEvent targetAppEvent = (AppEvent)constructor.newInstance(parameters);
+        multicastEvent(targetAppEvent,asyn);
+
+    }
+
+    /**
+     * 一次发布同一个动作的 订单数据，避免多次调用子服务，印象性能
+     * @param context 上下文对象
+     * @param data 封装了 data节点 的数据
+     * @throws Exception
+     */
+    public static void multicastEvent(AppContext context, Map<String,JSONArray> data, String asyn) throws Exception{
+        Assert.hasSize(data,"订单调度时，没有可处理的数据，data="+data);
+
+       Set<String> keys =  data.keySet();
+
+       for(String key : keys){
+           Class<AppEvent> appEvent = getEvent(key);
+
+           Class[] parameterTypes={Object.class,AppContext.class,JSONArray.class};
+
+           Constructor constructor = appEvent.getClass().getConstructor(parameterTypes);
+           Object[] parameters={null,context,data.get(key)};
+           AppEvent targetAppEvent = (AppEvent)constructor.newInstance(parameters);
+
+           multicastEvent(targetAppEvent,asyn);
+       }
+
+
     }
 
 
     /**
      * 发布事件
      * @param event
+     * @param asyn A 表示异步处理
      */
-    public static void multicastEvent(final AppEvent event) {
+    public static void multicastEvent(final AppEvent event,String asyn) {
         for (final AppListener<?> listener : getListeners(event.getClass().getName())) {
-            Executor executor = getTaskExecutor();
-            if (executor != null) {
+
+            if(CommonConstant.PROCESS_ORDER_ASYNCHRONOUS.equals(asyn)){ //异步处理
+
+                Executor executor = getTaskExecutor();
                 executor.execute(new Runnable() {
                     @Override
                     public void run() {
                         invokeListener(listener, event);
                     }
                 });
+
             }
             else {
                 invokeListener(listener, event);
@@ -112,7 +207,10 @@ public class AppEventPublishing extends LoggerEngine{
     /**
      * Return the current task executor for this multicaster.
      */
-    protected static Executor getTaskExecutor() {
+    protected static synchronized Executor getTaskExecutor() {
+        if(taskExecutor == null) {
+            taskExecutor = Executors.newFixedThreadPool(DEFAULT_THREAD_NUM);
+        }
         return taskExecutor;
     }
 

@@ -1,0 +1,9 @@
+{
+  "groups": [{
+    "name": "mq.queue.name",
+    "type": "com.java110.order.mq.MqConfig",
+    "sourceType": "com.java110.order.mq.MqConfig"
+  }],
+  "properties": [],
+  "hints": []
+}

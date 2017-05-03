@@ -2,11 +2,14 @@ package com.java110.user.smo.impl;
 
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson.JSONPath;
 import com.java110.common.log.LoggerEngine;
+import com.java110.common.util.Assert;
 import com.java110.common.util.ProtocolUtil;
 import com.java110.entity.user.BoCust;
 import com.java110.entity.user.BoCustAttr;
 import com.java110.entity.user.Cust;
+import com.java110.entity.user.CustAttr;
 import com.java110.feign.base.IPrimaryKeyService;
 import com.java110.user.dao.IUserServiceDao;
 import com.java110.user.smo.IUserServiceSMO;
@@ -16,11 +19,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.ObjectUtils;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * 用户服务信息管理业务信息实现
@@ -80,7 +81,15 @@ public class UserServiceSMOImpl extends BaseServiceSMO implements IUserServiceSM
 
     /**
      * 所有服务处理类
+     * {
      *
+     *     'boCust':[{}],
+     *     'boCustAttr':[{}]
+     * }
+     *
+     * 返回报文：
+     *
+     * {'RESULT_CODE':'0000','RESULT_MSG':'成功','RESULT_INFO':{'custId':'7000123,718881991'}}
      * @param userInfoJson
      * @return
      */
@@ -96,46 +105,91 @@ public class UserServiceSMOImpl extends BaseServiceSMO implements IUserServiceSM
         if (userInfoJson == null){
             throw new IllegalArgumentException("soUserService 入参 为空"+userInfoJson);
         }
-         // 客户信息处理
-            if(userInfoJson.containsKey("boCust")){
-                JSONArray boCusts = userInfoJson.getJSONArray("boCust");
-                JSONObject boCustObj = new JSONObject();
-                boCustObj.put("boCust",boCusts);
-                String returnSaveBoCust = this.soBoCust(boCustObj.toJSONString(),custIdKey);
+         // 客户信息处理 处理boCust节点
+        doProcessBoCust(userInfoJson,paramJson,custIdKey,resultInfo);
 
-                if(!ProtocolUtil.validateReturnJson(returnSaveBoCust,paramJson)){
-
-                    throw new RuntimeException("保存 bo_cust 失败："+boCustObj+(paramJson != null
-                            && paramJson.containsKey("RESULT_MSG")?paramJson.getString("RESULT_MSG"):"未知异常"));
-                }
-
-                resultInfo = paramJson.getJSONObject("RESULT_INFO");
-            }
-
-            //客户属性信息处理
-            if(userInfoJson.containsKey("boCustAttr")){
-
-                JSONArray boCustAttrs = userInfoJson.getJSONArray("boCustAttr");
-                //首先对custId 进行处理
-                if(custIdKey != null && custIdKey.size() > 0 ){
-                    for(int boCustAttrIndex = 0 ; boCustAttrIndex < boCustAttrs.size();boCustAttrIndex++){
-                       JSONObject boCustAttr = boCustAttrs.getJSONObject(boCustAttrIndex);
-                       boCustAttr.put("custId",custIdKey.get("custId"+boCustAttr.getString("custId")));
-                    }
-                }
-                JSONObject boCustAttrObj = new JSONObject();
-                boCustAttrObj.put("boCustAttr",boCustAttrs);
-                String returnSaveBoCustAttr = soBoCustAttr(boCustAttrObj.toJSONString());
-
-                if(!ProtocolUtil.validateReturnJson(returnSaveBoCustAttr,paramJson)){
-
-                    throw new RuntimeException("保存 bo_cust 失败："+boCustAttrObj+(paramJson != null
-                            && paramJson.containsKey("RESULT_MSG")?paramJson.getString("RESULT_MSG"):"未知异常"));
-                }
-            }
+        //客户属性信息处理 处理boCustAttr节点
+        doProcessBoCustAttr(userInfoJson,paramJson,custIdKey,resultInfo);
 
         return ProtocolUtil.createResultMsg(ProtocolUtil.RETURN_MSG_SUCCESS,"成功",resultInfo);
 
+    }
+
+    /**
+     *
+     * 请求报文为：
+     *
+     * {
+     "data": [
+     {
+     "actionTypeCd": "C1",
+     "boCust": [{},{}],
+     "boCustAttr": [{ }, {}]
+     },
+     {
+     "actionTypeCd": "C1",
+     "boCust": [{},{}],
+     "boCustAttr": [{ }, {}]
+     }
+     ]
+     }
+
+     返回报文 ：
+
+     { 'RESULT_CODE': '0000', 'RESULT_MSG': '成功', 'RESULT_INFO': {'cust':[{'oldCustId':'-1','custId':'12345678'},{'oldCustId':'-2','custId':'12345678'}]} }
+     * @param userInfoJson
+     * @return
+     * @throws Exception
+     */
+    @Override
+    public String soUserServiceForOrderService(JSONObject userInfoJson) throws Exception {
+
+        Assert.isNull(userInfoJson,"data","请求报文缺少 data 节点，请检查");
+
+        JSONArray custInfos = userInfoJson.getJSONArray("data");
+
+        Assert.isNull(custInfos,"请求报文中data节点，没有子节点，data子节点应该为JSONArray,custInfos="+custInfos);
+
+        JSONObject custInfoJ = new JSONObject();
+        JSONArray resultCustIdArray = new JSONArray();
+        for(int custInfoIndex = 0 ;custInfoIndex < custInfos.size();custInfoIndex ++){
+            JSONObject custInfoJson = custInfos.getJSONObject(custInfoIndex);
+            String soUserServiceResult = this.soUserService(custInfoJson);
+            JSONObject resultInfo = new JSONObject();
+
+            if(!ProtocolUtil.validateReturnJson(soUserServiceResult,resultInfo)){
+                throw new RuntimeException("客户信息受理失败，原因为："+resultInfo.getString(ProtocolUtil.RESULT_MSG));
+            }
+            if(resultInfo.getJSONObject(ProtocolUtil.RESULT_INFO) != null
+                    && resultInfo.getJSONObject(ProtocolUtil.RESULT_INFO).containsKey("custId")) {
+
+                String custIds = custInfoJ.getString("custId");
+//                custIds += "," + resultInfo.getJSONObject(ProtocolUtil.RESULT_INFO).getString("custId");
+
+//                custIds = custIds.startsWith(",") && custIds.length()>1 ? custIds.substring(1,custIds.length()):custIds;
+                //custInfoJ.put("custId", custIds);
+                JSONArray boCusts = custInfoJson.getJSONArray("boCust");
+
+                Object custIdObj = JSONPath.eval(custInfoJson,"$.boCust[custId < '0'][0].custId");
+                if(StringUtils.isNotBlank(custIds) && !ObjectUtils.isEmpty(custIdObj)) {
+
+                    String[] allNewCustIds = custIds.split(",");
+                    JSONObject newCustIdJson = null;
+                    for (String custId : allNewCustIds) {
+                        newCustIdJson = new JSONObject();
+                        newCustIdJson.put("oldCustId",custIdObj);
+                        newCustIdJson.put("custId",custId);
+                        resultCustIdArray.add(newCustIdJson);
+                    }
+
+                }
+            }
+
+        }
+
+        custInfoJ.put("cust",resultCustIdArray);
+
+        return ProtocolUtil.createResultMsg(ProtocolUtil.RETURN_MSG_SUCCESS,"成功",custInfoJ);
     }
 
     /**
@@ -147,7 +201,7 @@ public class UserServiceSMOImpl extends BaseServiceSMO implements IUserServiceSM
      *
      * @param boCusts
      * @return 成功 会带上处理客户的客户ID
-     * {'RESULT_CODE':'0000','RESULT_MSG':'成功','RESULT_INFO':{'custId':'7000123,718881991}}
+     * {'RESULT_CODE':'0000','RESULT_MSG':'成功','RESULT_INFO':{'custId':'7000123,718881991'}}
      * @throws Exception
      */
     public String soBoCust(String boCusts) throws Exception{
@@ -328,6 +382,36 @@ public class UserServiceSMOImpl extends BaseServiceSMO implements IUserServiceSM
         return ProtocolUtil.createResultMsg(ProtocolUtil.RETURN_MSG_SUCCESS,"成功",null);
     }
 
+    /**
+     * 作废客户信息
+     * [{},{},{}]
+     *
+     * @param datas
+     * @return
+     * @throws Exception
+     */
+    @Override
+    public String soDeleteCustInfo(JSONArray datas) throws Exception {
+
+        Assert.isNull(datas,"传入的data节点下没有任何内容");
+
+        for(int boIdIndex = 0 ; boIdIndex < datas.size(); boIdIndex++){
+            JSONObject data = datas.getJSONObject(boIdIndex);
+
+            Assert.isNull(data,"boId","当前节点中没有包含boId节点格式错误"+data);
+
+            // 复原Cust
+            doDeleteBoCust(data);
+
+            // 复原CustAttr
+            doDeleteBoCustAttr(data);
+
+        }
+
+
+        return null;
+    }
+
 
     /**
      * 查询客户信息
@@ -348,6 +432,193 @@ public class UserServiceSMOImpl extends BaseServiceSMO implements IUserServiceSM
         }
 
         return ProtocolUtil.createResultMsg(ProtocolUtil.RETURN_MSG_SUCCESS,"成功",JSONObject.parseObject(JSONObject.toJSONString(newCust)));
+    }
+
+    /**
+     * 处理boCust 节点
+     * @throws Exception
+     */
+    public void doProcessBoCust(JSONObject userInfoJson,JSONObject paramJson,Map custIdKey, JSONObject resultInfo) throws Exception{
+
+        if(userInfoJson.containsKey("boCust")){
+            JSONArray boCusts = userInfoJson.getJSONArray("boCust");
+            JSONObject boCustObj = new JSONObject();
+            boCustObj.put("boCust",boCusts);
+            String returnSaveBoCust = this.soBoCust(boCustObj.toJSONString(),custIdKey);
+
+            if(!ProtocolUtil.validateReturnJson(returnSaveBoCust,paramJson)){
+
+                throw new RuntimeException("保存 bo_cust 失败："+boCustObj+(paramJson != null
+                        && paramJson.containsKey("RESULT_MSG")?paramJson.getString("RESULT_MSG"):"未知异常"));
+            }
+
+            resultInfo = paramJson.getJSONObject("RESULT_INFO");
+        }
+    }
+
+    /**
+     * 处理boCustAttr 节点
+     * @param userInfoJson
+     * @param paramJson
+     * @param custIdKey
+     * @param resultInfo
+     */
+    public void doProcessBoCustAttr(JSONObject userInfoJson,JSONObject paramJson,Map custIdKey, JSONObject resultInfo) throws Exception{
+        if(userInfoJson.containsKey("boCustAttr")){
+
+            JSONArray boCustAttrs = userInfoJson.getJSONArray("boCustAttr");
+            //首先对custId 进行处理
+            if(custIdKey != null && custIdKey.size() > 0 ){
+                for(int boCustAttrIndex = 0 ; boCustAttrIndex < boCustAttrs.size();boCustAttrIndex++){
+                    JSONObject boCustAttr = boCustAttrs.getJSONObject(boCustAttrIndex);
+                    boCustAttr.put("custId",custIdKey.get("custId"+boCustAttr.getString("custId")));
+                }
+            }
+            JSONObject boCustAttrObj = new JSONObject();
+            boCustAttrObj.put("boCustAttr",boCustAttrs);
+            String returnSaveBoCustAttr = soBoCustAttr(boCustAttrObj.toJSONString());
+
+            if(!ProtocolUtil.validateReturnJson(returnSaveBoCustAttr,paramJson)){
+
+                throw new RuntimeException("保存 bo_cust 失败："+boCustAttrObj+(paramJson != null
+                        && paramJson.containsKey("RESULT_MSG")?paramJson.getString("RESULT_MSG"):"未知异常"));
+            }
+        }
+    }
+
+    /**
+     * 作废 boCust 信息
+     * @param data
+     * @throws Exception
+     */
+    public void doDeleteBoCust(JSONObject data) throws Exception{
+
+
+        Cust deleteCust = null;
+        //根据boId 查询bo_cust 表，是否有数据，没数据直接返回
+        BoCust boCust = new BoCust();
+
+        boCust.setBoId(data.getString("boId"));
+
+       List<BoCust> boCusts =  iUserServiceDao.queryBoCust(boCust);
+
+       //Assert.isOne(boCusts,"在表bo_cust中未找到boId 为["+data.getString("boId")+"]的数据 或有多条数据，请检查");
+        if(boCusts == null || boCusts.size() < 1){
+            LoggerEngine.error("当前没有查到数为 "+data+"请检查数据");
+            return;
+        }
+       //在过程表中补一条作废的数据，然后根据boId的动作对实例数据进行处理
+
+        boCust.setCustId(boCusts.get(0).getCustId());
+        boCust.setBoId("");
+        //查询出所有custId 一样的数据
+        List<BoCust> boCustAll =  iUserServiceDao.queryBoCust(boCust);
+
+        Assert.isNull(boCustAll,"当前没有查到custId 为 "+boCusts.get(0).getCustId()+"请检查数据");
+
+        boCust = boCusts.get(0);
+
+        BoCust newBoCust = new BoCust();
+        newBoCust.setBoId(data.getString("newBoId"));
+        newBoCust.setCustId(boCust.getCustId());
+        newBoCust.setState("DEL");
+        int saveBoCustFlag = iUserServiceDao.saveDataToBoCust(newBoCust);
+
+        if(saveBoCustFlag < 1){
+            throw new RuntimeException("向bo_cust表中保存数据失败，boCust="+JSONObject.toJSONString(newBoCust));
+        }
+
+        //首先删除实例数据
+        deleteCust = new Cust();
+        deleteCust.setCustId(boCust.getCustId());
+        if(iUserServiceDao.deleteDataToCust(deleteCust) < 1){
+            throw new RuntimeException("删除cust实例数据失败"+JSONObject.toJSONString(deleteCust));
+        }
+        //如果有多条数据，则恢复 前一条数据信息，这边存在bug 如果上一条的数据没有分装以前数据的情况下会有问题，
+        // 所以我们的原则是再更新或删除数据时一定要在过程表中保存完整是实例数据信息
+        if(boCustAll.size() > 1){
+            Cust oldCust = boCustAll.get(1).convert();
+            if(iUserServiceDao.saveDataToCust(oldCust)<1 ){
+                throw new RuntimeException("cust 表恢复老数据信息失败，cust 为："+JSONObject.toJSONString(oldCust));
+            }
+        }
+    }
+
+    /**
+     * 删除 bo_cust_attr
+     * @param data
+     * @throws Exception
+     */
+    public void doDeleteBoCustAttr(JSONObject data) throws Exception{
+
+        BoCustAttr boCustAttrTmp = new BoCustAttr();
+
+        boCustAttrTmp.setBoId(data.getString("boId"));
+
+        List<BoCustAttr> boCustAttrs = iUserServiceDao.queryBoCustAttr(boCustAttrTmp);
+
+        if(boCustAttrs == null || boCustAttrs.size() < 1){
+            LoggerEngine.error("当前没有查到数为 "+data+"请检查数据");
+            return;
+        }
+
+        boCustAttrTmp.setBoId("");
+        boCustAttrTmp.setCustId(boCustAttrs.get(0).getCustId());
+
+        List<BoCustAttr> boCustAttrsTmps = iUserServiceDao.queryBoCustAttr(boCustAttrTmp);
+
+        Assert.isNull(boCustAttrsTmps,"当前没有查到custId 为 "+boCustAttrs.get(0).getCustId()+"请检查数据");
+
+        //获取上一次所有的属性
+
+        List<BoCustAttr> preBoCustAttrTmps = getPreBoCustAttrs(boCustAttrsTmps);
+
+        //保存过程表
+        for(BoCustAttr boCustAttr : boCustAttrs){
+            boCustAttr.setBoId("newBoId");
+            boCustAttr.setState("DEL");
+            if(iUserServiceDao.saveDataToBoCustAttr(boCustAttr) < 1){
+                throw new RuntimeException("保存数据失败，保存数据为boCustAttr = "+ JSONObject.toJSONString(boCustAttr));
+            }
+        }
+
+        //删除实例数据 这里思路是，删除实例数据中数据，将上一次ADD数据重新写一遍
+        CustAttr custAttrTmp = new CustAttr();
+        custAttrTmp.setCustId(boCustAttrs.get(0).getCustId());
+        if(iUserServiceDao.deleteDataToCustAttr(custAttrTmp) < 1){
+            throw new RuntimeException("删除CustAttr 实例数据失败,数据为："+JSONObject.toJSONString(custAttrTmp));
+        }
+
+        for(BoCustAttr boCustAttr : preBoCustAttrTmps){
+            if("ADD".equals(boCustAttr.getState())){
+                if(iUserServiceDao.deleteDataToCustAttr(boCustAttr.convert()) < 1){
+                    throw new  RuntimeException("复原原始数据失败，数据为：" + JSONObject.toJSONString(boCustAttr));
+                }
+            }
+        }
+
+    }
+
+    /**
+     * 获取上上一次的操作
+     * @param boCustAttrs
+     * @return
+     */
+    private List<BoCustAttr> getPreBoCustAttrs(List<BoCustAttr> boCustAttrs){
+
+        String firstBoId = boCustAttrs.get(0).getBoId();
+        String preBoId = "";
+        List<BoCustAttr> preBoCustAttrs = new ArrayList<BoCustAttr>();
+        for(BoCustAttr boCustAttr : boCustAttrs){
+            if(!firstBoId.equals(boCustAttr.getBoId())){
+                if(!preBoId.equals(boCustAttr.getBoId()) && !"".equals(preBoId)){
+                    break;
+                }
+                preBoId = boCustAttr.getBoId();
+                preBoCustAttrs.add(boCustAttr);
+            }
+        }
+        return preBoCustAttrs;
     }
 
     public IPrimaryKeyService getiPrimaryKeyService() {
